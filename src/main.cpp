@@ -82,6 +82,10 @@ bool g_isDebug = false;
 // Debug control variables (declared early for use in g_controls)
 bool g_paused = false;
 float g_timeScale = 1.0f;
+int g_overrideFractal = -1;
+int g_overridePalette = -1;
+int g_useAA = 1;
+bool g_hideLegend = false;
 
 enum ControlType {
     CTRL_INT,
@@ -171,9 +175,21 @@ void UpdateControlLabel(const ControlParam& cp) {
 
 #define IDC_RESET_SCENE 4001
 #define IDC_RESET_ALL   4002
+#define IDC_CHECKBOX_PAUSE     4003
+#define IDC_CHECKBOX_AA        4004
+#define IDC_COMBOBOX_FRACTAL   4005
+#define IDC_COMBOBOX_PALETTE   4006
+#define IDC_BUTTON_SAVE_CONFIG 4007
 
 HWND g_hwndResetSceneBtn = nullptr;
 HWND g_hwndResetAllBtn = nullptr;
+HWND g_hwndSaveConfigBtn = nullptr;
+HWND g_hwndPauseCheckbox = nullptr;
+HWND g_hwndAACheckbox = nullptr;
+HWND g_hwndFractalLabel = nullptr;
+HWND g_hwndFractalCombobox = nullptr;
+HWND g_hwndPaletteLabel = nullptr;
+HWND g_hwndPaletteCombobox = nullptr;
 HWND g_hwndDebugWindow = nullptr;
 HFONT g_panelFont = nullptr;
 bool g_panelVisible = true;
@@ -205,6 +221,10 @@ void ResetAllVariables() {
     g_resolutionScale = TARGET_RESOLUTION_SCALE;
     g_maxRaymarchSteps = MAX_RAYMARCH_STEPS;
     g_timeScale = 1.0f;
+    g_overrideFractal = -1;
+    g_overridePalette = -1;
+    g_paused = false;
+    g_useAA = 1;
     for (int s = 0; s < 5; ++s) {
         ResetSceneVariables(s);
     }
@@ -220,8 +240,20 @@ void UpdateSlidersAndLabels() {
     }
 }
 
+std::string GetConfigFilePath() {
+    char path[MAX_PATH];
+    DWORD len = GetEnvironmentVariableA("LOCALAPPDATA", path, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        std::string dir = std::string(path) + "\\3DFractalScreensaver";
+        CreateDirectoryA(dir.c_str(), nullptr);
+        return dir + "\\debug_vars.cfg";
+    }
+    return "debug_vars.cfg";
+}
+
 void SaveConfig() {
-    std::ofstream cfg("logs/debug_vars.cfg");
+    std::string path = GetConfigFilePath();
+    std::ofstream cfg(path);
     if (cfg.is_open()) {
         for (int i = 0; i < NUM_CONTROLS; ++i) {
             if (g_controls[i].type == CTRL_INT) {
@@ -230,18 +262,35 @@ void SaveConfig() {
                 cfg << *reinterpret_cast<float*>(g_controls[i].pValue) << "\n";
             }
         }
+        cfg << g_overrideFractal << "\n";
+        cfg << g_overridePalette << "\n";
+        cfg << (g_paused ? 1 : 0) << "\n";
+        cfg << g_useAA << "\n";
+        cfg << (g_hideLegend ? 1 : 0) << "\n";
         cfg.close();
     }
 }
 
 void LoadConfig() {
-    std::ifstream cfg("logs/debug_vars.cfg");
+    std::string path = GetConfigFilePath();
+    std::ifstream cfg(path);
     if (cfg.is_open()) {
         for (int i = 0; i < NUM_CONTROLS; ++i) {
             if (g_controls[i].type == CTRL_INT) {
                 cfg >> *reinterpret_cast<int*>(g_controls[i].pValue);
             } else {
                 cfg >> *reinterpret_cast<float*>(g_controls[i].pValue);
+            }
+        }
+        if (cfg >> g_overrideFractal) {
+            cfg >> g_overridePalette;
+            int pausedVal;
+            cfg >> pausedVal;
+            g_paused = (pausedVal == 1);
+            cfg >> g_useAA;
+            int hideLegendVal;
+            if (cfg >> hideLegendVal) {
+                g_hideLegend = (hideLegendVal == 1);
             }
         }
         cfg.close();
@@ -259,9 +308,10 @@ void UpdateControlLayout(int activeFractal, bool panelVisible) {
     int startX = winW - 445;
     int y = 10;
     
-    // Universal (first 3 controls)
+    int cmdShow = panelVisible ? SW_SHOW : SW_HIDE;
+
+    // 1. Universal (first 3 controls: Res Scale, Raymarch Steps, Speed Scale)
     for (int i = 0; i < 3; ++i) {
-        int cmdShow = panelVisible ? SW_SHOW : SW_HIDE;
         ShowWindow(g_controls[i].hwndLabel, cmdShow);
         ShowWindow(g_controls[i].hwndSlider, cmdShow);
         if (panelVisible) {
@@ -269,6 +319,30 @@ void UpdateControlLayout(int activeFractal, bool panelVisible) {
             SetWindowPos(g_controls[i].hwndSlider, nullptr, startX, y + 18, 420, 25, SWP_NOZORDER | SWP_NOACTIVATE);
             y += 48;
         }
+    }
+
+    // 2. Custom Settings (Scene dropdown, Palette dropdown, Pause checkbox, AA checkbox)
+    if (g_hwndFractalLabel) ShowWindow(g_hwndFractalLabel, cmdShow);
+    if (g_hwndFractalCombobox) ShowWindow(g_hwndFractalCombobox, cmdShow);
+    if (g_hwndPaletteLabel) ShowWindow(g_hwndPaletteLabel, cmdShow);
+    if (g_hwndPaletteCombobox) ShowWindow(g_hwndPaletteCombobox, cmdShow);
+    if (g_hwndPauseCheckbox) ShowWindow(g_hwndPauseCheckbox, cmdShow);
+    if (g_hwndAACheckbox) ShowWindow(g_hwndAACheckbox, cmdShow);
+
+    if (panelVisible) {
+        if (g_hwndFractalLabel) SetWindowPos(g_hwndFractalLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (g_hwndFractalCombobox) SetWindowPos(g_hwndFractalCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+        y += 54;
+
+        if (g_hwndPaletteLabel) SetWindowPos(g_hwndPaletteLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (g_hwndPaletteCombobox) SetWindowPos(g_hwndPaletteCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+        y += 54;
+
+        if (g_hwndPauseCheckbox) SetWindowPos(g_hwndPauseCheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+        y += 24;
+
+        if (g_hwndAACheckbox) SetWindowPos(g_hwndAACheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+        y += 30;
     }
     
     // Scene specific controls
@@ -282,9 +356,9 @@ void UpdateControlLayout(int activeFractal, bool panelVisible) {
             else if (i >= 14 && i <= 15 && activeFractal == 4) shouldShow = true;
         }
         
-        int cmdShow = shouldShow ? SW_SHOW : SW_HIDE;
-        ShowWindow(g_controls[i].hwndLabel, cmdShow);
-        ShowWindow(g_controls[i].hwndSlider, cmdShow);
+        int itemShow = shouldShow ? SW_SHOW : SW_HIDE;
+        ShowWindow(g_controls[i].hwndLabel, itemShow);
+        ShowWindow(g_controls[i].hwndSlider, itemShow);
         
         if (shouldShow) {
             SetWindowPos(g_controls[i].hwndLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -293,13 +367,15 @@ void UpdateControlLayout(int activeFractal, bool panelVisible) {
         }
     }
     
-    // Reset buttons
-    int cmdBtnShow = panelVisible ? SW_SHOW : SW_HIDE;
-    if (g_hwndResetSceneBtn) ShowWindow(g_hwndResetSceneBtn, cmdBtnShow);
-    if (g_hwndResetAllBtn) ShowWindow(g_hwndResetAllBtn, cmdBtnShow);
+    // Action buttons
+    if (g_hwndResetSceneBtn) ShowWindow(g_hwndResetSceneBtn, cmdShow);
+    if (g_hwndResetAllBtn) ShowWindow(g_hwndResetAllBtn, cmdShow);
+    if (g_hwndSaveConfigBtn) ShowWindow(g_hwndSaveConfigBtn, cmdShow);
+
     if (panelVisible) {
-        SetWindowPos(g_hwndResetSceneBtn, nullptr, startX, y + 10, 200, 30, SWP_NOZORDER | SWP_NOACTIVATE);
-        SetWindowPos(g_hwndResetAllBtn, nullptr, startX + 220, y + 10, 200, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(g_hwndResetSceneBtn, nullptr, startX, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(g_hwndResetAllBtn, nullptr, startX + 145, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(g_hwndSaveConfigBtn, nullptr, startX + 290, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -375,9 +451,6 @@ bool LoadGLExtensions() {
 // Global control states already declared early
 
 // Debug control variables
-int g_overrideFractal = -1;
-int g_overridePalette = -1;
-int g_useAA = 1;
 
 std::ofstream logFile;
 
@@ -431,14 +504,43 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
+            int code = HIWORD(wParam);
             if (id == IDC_RESET_SCENE) {
                 ResetSceneVariables(g_currentActiveFractal);
                 UpdateSlidersAndLabels();
+                if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, (g_overrideFractal != -1) ? g_overrideFractal : g_currentActiveFractal, 0);
+                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, (g_overridePalette != -1) ? g_overridePalette : 0, 0);
                 SaveConfig();
             } else if (id == IDC_RESET_ALL) {
                 ResetAllVariables();
                 UpdateSlidersAndLabels();
+                if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, -1, 0);
+                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, -1, 0);
                 SaveConfig();
+            } else if (id == IDC_BUTTON_SAVE_CONFIG) {
+                SaveConfig();
+                MessageBoxA(hwnd, "Configuration saved successfully to local appdata folder!", "3D Fractal Screensaver", MB_OK | MB_ICONINFORMATION);
+            } else if (id == IDC_CHECKBOX_PAUSE && code == BN_CLICKED) {
+                LRESULT checked = SendMessageA(g_hwndPauseCheckbox, BM_GETCHECK, 0, 0);
+                g_paused = (checked == BST_CHECKED);
+            } else if (id == IDC_CHECKBOX_AA && code == BN_CLICKED) {
+                LRESULT checked = SendMessageA(g_hwndAACheckbox, BM_GETCHECK, 0, 0);
+                g_useAA = (checked == BST_CHECKED) ? 1 : 0;
+            } else if (id == IDC_COMBOBOX_FRACTAL && code == CBN_SELCHANGE) {
+                int idx = SendMessageA(g_hwndFractalCombobox, CB_GETCURSEL, 0, 0);
+                if (idx >= 0 && idx < MAX_FRACTALS) {
+                    g_overrideFractal = idx;
+                    UpdateControlLayout(idx, g_panelVisible);
+                }
+            } else if (id == IDC_COMBOBOX_PALETTE && code == CBN_SELCHANGE) {
+                int idx = SendMessageA(g_hwndPaletteCombobox, CB_GETCURSEL, 0, 0);
+                if (idx >= 0 && idx < MAX_PALETTES) {
+                    g_overridePalette = idx;
+                }
             }
             return 0;
         }
@@ -489,17 +591,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g_shouldExit = true;
                 } else if (wParam == 'P') {
                     g_paused = !g_paused;
+                    if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
                 } else if (wParam == 'F') {
                     if (g_overrideFractal == -1) g_overrideFractal = 0;
                     else g_overrideFractal = (g_overrideFractal + 1) % MAX_FRACTALS;
+                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal, 0);
+                    UpdateControlLayout(g_overrideFractal, g_panelVisible);
                 } else if (wParam == 'B') {
                     if (g_overrideFractal == -1) g_overrideFractal = 0;
                     else g_overrideFractal = (g_overrideFractal + MAX_FRACTALS - 1) % MAX_FRACTALS;
+                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal, 0);
+                    UpdateControlLayout(g_overrideFractal, g_panelVisible);
                 } else if (wParam == 'C') {
                     if (g_overridePalette == -1) g_overridePalette = 0;
                     else g_overridePalette = (g_overridePalette + 1) % MAX_PALETTES;
+                    if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, g_overridePalette, 0);
                 } else if (wParam == 'A') {
                     g_useAA = g_useAA == 1 ? 0 : 1;
+                    if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
                 } else if (wParam == 'H') {
                     g_panelVisible = !g_panelVisible;
                     UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
@@ -678,22 +787,98 @@ bool InitMonitorWindow(MonitorWindow& mw, HINSTANCE hInstance, RECT rect, HWND p
             UpdateControlLabel(g_controls[i]);
         }
 
+        // --- NEW CONTROLS ---
+        g_hwndFractalLabel = CreateWindowExA(
+            0, "STATIC", "Fractal Scene Selection:",
+            WS_CHILD | WS_VISIBLE,
+            1475, 10, 420, 18,
+            mw.hwnd, nullptr, hInstance, nullptr
+        );
+        g_hwndFractalCombobox = CreateWindowExA(
+            0, "COMBOBOX", "",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            1475, 10, 420, 200,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_COMBOBOX_FRACTAL),
+            hInstance, nullptr
+        );
+        for (int i = 0; i < MAX_FRACTALS; ++i) {
+            SendMessageA(g_hwndFractalCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FRACTAL_NAMES[i]));
+        }
+        int curFrac = (g_overrideFractal != -1) ? g_overrideFractal : 0;
+        SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, curFrac, 0);
+
+        g_hwndPaletteLabel = CreateWindowExA(
+            0, "STATIC", "Color Palette Selection:",
+            WS_CHILD | WS_VISIBLE,
+            1475, 10, 420, 18,
+            mw.hwnd, nullptr, hInstance, nullptr
+        );
+        g_hwndPaletteCombobox = CreateWindowExA(
+            0, "COMBOBOX", "",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+            1475, 10, 420, 200,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_COMBOBOX_PALETTE),
+            hInstance, nullptr
+        );
+        for (int i = 0; i < MAX_PALETTES; ++i) {
+            Palette p = GetPalette(i);
+            char buf[128];
+            std::sprintf(buf, "%d: %s", i, p.name);
+            SendMessageA(g_hwndPaletteCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(buf));
+        }
+        int curPal = (g_overridePalette != -1) ? g_overridePalette : 0;
+        SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, curPal, 0);
+
+        g_hwndPauseCheckbox = CreateWindowExA(
+            0, "BUTTON", "Pause Camera Fly-Through",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            1475, 10, 420, 20,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_CHECKBOX_PAUSE),
+            hInstance, nullptr
+        );
+        SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        g_hwndAACheckbox = CreateWindowExA(
+            0, "BUTTON", "Enable Antialiasing (AA)",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            1475, 10, 420, 20,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_CHECKBOX_AA),
+            hInstance, nullptr
+        );
+        SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // --- ACTION BUTTONS ---
         g_hwndResetSceneBtn = CreateWindowExA(
             0, "BUTTON", "Reset Scene",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1475, 500, 200, 30,
+            1475, 500, 130, 30,
             mw.hwnd, reinterpret_cast<HMENU>(IDC_RESET_SCENE),
             hInstance, nullptr
         );
         g_hwndResetAllBtn = CreateWindowExA(
             0, "BUTTON", "Reset All",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1695, 500, 200, 30,
+            1615, 500, 130, 30,
             mw.hwnd, reinterpret_cast<HMENU>(IDC_RESET_ALL),
             hInstance, nullptr
         );
+        g_hwndSaveConfigBtn = CreateWindowExA(
+            0, "BUTTON", "Save Config",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1755, 500, 130, 30,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_BUTTON_SAVE_CONFIG),
+            hInstance, nullptr
+        );
+
+        SendMessageA(g_hwndFractalLabel, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndFractalCombobox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndPaletteLabel, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndPaletteCombobox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndPauseCheckbox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndAACheckbox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
         SendMessageA(g_hwndResetSceneBtn, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
         SendMessageA(g_hwndResetAllBtn, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndSaveConfigBtn, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
 
         UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
     }
@@ -762,58 +947,249 @@ enum class RunMode {
     Config
 };
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    logFile.open("logs/runtime.log");
-    Log("Screensaver launched. CmdLine: " + std::string(lpCmdLine));
-
-    // Auto-detect debug mode by checking executable file name
-    char modulePath[MAX_PATH];
-    GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-    std::string modulePathStr = modulePath;
-    for (char& c : modulePathStr) c = std::tolower(c);
-    if (modulePathStr.find("debug") != std::string::npos) {
-        g_isDebug = true;
-        Log("Debug mode enabled based on executable name.");
-        LoadConfig();
+std::string GetOptionValue(const std::string& originalCmdLine, const std::string& optName) {
+    std::string cmdLower = originalCmdLine;
+    for (char& c : cmdLower) c = std::tolower(c);
+    
+    std::string optNameLower = optName;
+    for (char& c : optNameLower) c = std::tolower(c);
+    
+    std::string prefixes[] = { "--" + optNameLower, "-" + optNameLower, "/" + optNameLower };
+    for (const auto& pref : prefixes) {
+        size_t pos = cmdLower.find(pref);
+        if (pos != std::string::npos) {
+            pos += pref.length();
+            while (pos < originalCmdLine.length() && (originalCmdLine[pos] == ' ' || originalCmdLine[pos] == ':')) {
+                pos++;
+            }
+            std::string val = "";
+            while (pos < originalCmdLine.length() && originalCmdLine[pos] != ' ') {
+                if (originalCmdLine[pos] != '"') {
+                    val += originalCmdLine[pos];
+                }
+                pos++;
+            }
+            return val;
+        }
     }
+    return "";
+}
+
+bool HasOption(const std::string& cmdLine, const std::string& optName) {
+    std::string cmdLower = cmdLine;
+    for (char& c : cmdLower) c = std::tolower(c);
+    
+    std::string optNameLower = optName;
+    for (char& c : optNameLower) c = std::tolower(c);
+    
+    return (cmdLower.find("/" + optNameLower) != std::string::npos) ||
+           (cmdLower.find("-" + optNameLower) != std::string::npos) ||
+           (cmdLower.find("--" + optNameLower) != std::string::npos);
+}
+
+void ShowConsoleHelp() {
+    AllocConsole();
+    FILE* fpOut;
+    FILE* fpIn;
+    freopen_s(&fpOut, "CONOUT$", "w", stdout);
+    freopen_s(&fpIn, "CONIN$", "r", stdin);
+    
+    std::cout << "======================================================================\n";
+    std::cout << "3D Fractal Screensaver - Command Line Help\n";
+    std::cout << "======================================================================\n\n";
+    std::cout << "Usage:\n";
+    std::cout << "  fractals.scr [options] [overrides]\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  /s, -s, --s              Run screensaver in fullscreen mode (default)\n";
+    std::cout << "  /c, -c, --c              Run in configuration/interactive mode\n";
+    std::cout << "  /p, -p, --p <HWND>       Run in preview mode parented to a child window of HWND\n";
+    std::cout << "  /l, -l, --log, --verbose Force writing diagnostic logs to logs/runtime.log\n";
+    std::cout << "  /hl, -hl, --hl, --hide-legend, --hidelegend\n";
+    std::cout << "                           Hide visual on-screen stats legend overlay\n";
+    std::cout << "  /h, -h, --help, /?, -?   Display this help message\n\n";
+    std::cout << "Configuration Import/Export:\n";
+    std::cout << "  /load, -load, --load <path>  Import configuration from arbitrary file path\n";
+    std::cout << "  /save, -save, --save <path>  Export configuration to arbitrary file path\n\n";
+    std::cout << "Parameter Overrides:\n";
+    std::cout << "  /f, -f, --f <0-4>        Override starting fractal scene:\n";
+    std::cout << "                           0: Mandelbulb, 1: Julia, 2: Jerusalem,\n";
+    std::cout << "                           3: Sierpinski, 4: Menger\n";
+    std::cout << "  /t, -t, --t <0-49>       Override starting color palette index\n";
+    std::cout << "  /a, -a, --a <0|1>        Override adaptive antialiasing (0=off, 1=on)\n";
+    std::cout << "  /r, -r, --r <0.1-1.0>    Override resolution scaling factor\n";
+    std::cout << "  /st, -st, --st <10-150>  Override maximum raymarching step count\n";
+    std::cout << "  /sp, -sp, --sp <0.0-5.0> Override camera speed scale\n\n";
+    std::cout << "Press ENTER to exit help...\n";
+    
+    std::fflush(stdout);
+    std::cin.get();
+    
+    if (fpOut) fclose(fpOut);
+    if (fpIn) fclose(fpIn);
+    FreeConsole();
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    std::string originalCmd = lpCmdLine;
+
+    std::string cmd = originalCmd;
+    for (char& c : cmd) c = std::tolower(c);
+
+    // Help command check
+    if (HasOption(cmd, "h") || HasOption(cmd, "?") || cmd.find("help") != std::string::npos) {
+        ShowConsoleHelp();
+        return 0;
+    }
+
+    bool hasC = HasOption(cmd, "c");
+    bool hasP = HasOption(cmd, "p");
+    bool hasS = HasOption(cmd, "s");
 
     RunMode runMode = RunMode::ScreenSaver;
     HWND parentHwnd = nullptr;
 
-    std::string cmd = lpCmdLine;
-    for (char& c : cmd) c = std::tolower(c);
-
-    if (cmd.find("/c") != std::string::npos || cmd.find("-c") != std::string::npos) {
+    if (hasC) {
         runMode = RunMode::Config;
-    } else if (cmd.find("/p") != std::string::npos || cmd.find("-p") != std::string::npos) {
+    } else if (hasP) {
         runMode = RunMode::Preview;
-        size_t idx = cmd.find("/p");
-        if (idx == std::string::npos) idx = cmd.find("-p");
-        idx += 2;
-        while (idx < cmd.length() && (cmd[idx] == ' ' || cmd[idx] == ':')) idx++;
-        std::string hwndStr = "";
-        while (idx < cmd.length() && std::isdigit(cmd[idx])) {
-            hwndStr += cmd[idx++];
+        std::string hwndVal = GetOptionValue(originalCmd, "p");
+        if (!hwndVal.empty()) {
+            parentHwnd = reinterpret_cast<HWND>(std::stoull(hwndVal));
         }
-        if (!hwndStr.empty()) {
-            parentHwnd = reinterpret_cast<HWND>(std::stoull(hwndStr));
-        }
-    } else if (cmd.find("/s") != std::string::npos || cmd.find("-s") != std::string::npos) {
+    } else if (hasS) {
         runMode = RunMode::ScreenSaver;
+    } else {
+        // ponytail: default to config if launched with no arguments (e.g. from Explorer context menu "Configurar")
+        std::string trimmed = cmd;
+        trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n\"'"));
+        trimmed.erase(trimmed.find_last_not_of(" \t\r\n\"'") + 1);
+        if (trimmed.empty()) {
+            runMode = RunMode::Config;
+        } else {
+            runMode = RunMode::ScreenSaver;
+        }
     }
 
-    if (runMode == RunMode::Config) {
-        Log("Config mode activated.");
-        MessageBoxA(nullptr, 
-            "3D Fractal Screensaver\n\n"
-            "This screensaver renders 5 dynamic 3D Fractals (Mandelbulb, Julia Quaternions, Jerusalem Cube, Sierpinski Pyramid, Menger Sponge) "
-            "directly on the GPU using raymarching.\n\n"
-            "It will run in fullscreen across all connected monitors.\n"
-            "Press any key or move the mouse to exit.", 
-            "3D Fractal Screensaver Settings", 
-            MB_OK | MB_ICONINFORMATION);
-        return 0;
+    // Configure logging conditional on config /C, explicit flag /L, or --verbose
+    bool shouldLog = (runMode == RunMode::Config) || HasOption(cmd, "l") || HasOption(cmd, "log") || HasOption(cmd, "verbose");
+    if (shouldLog) {
+        CreateDirectoryA("logs", nullptr);
+        logFile.open("logs/runtime.log");
+        Log("Screensaver launched in logging mode. CmdLine: " + originalCmd);
     }
+
+    // Unify config and debug state: Config mode (/C) is interactive debug mode
+    g_isDebug = (runMode == RunMode::Config);
+
+    // Both screensaver and config modes load configuration
+    LoadConfig();
+
+    // Hide legend flag overrides
+    if (HasOption(cmd, "hl") || HasOption(cmd, "hide-legend") || HasOption(cmd, "hidelegend")) {
+        g_hideLegend = true;
+    }
+
+    // Import configuration coordinates from custom location
+    if (HasOption(cmd, "load")) {
+        std::string path = GetOptionValue(originalCmd, "load");
+        if (!path.empty()) {
+            std::ifstream src(path);
+            if (src.is_open()) {
+                for (int i = 0; i < NUM_CONTROLS; ++i) {
+                    if (g_controls[i].type == CTRL_INT) {
+                        src >> *reinterpret_cast<int*>(g_controls[i].pValue);
+                    } else {
+                        src >> *reinterpret_cast<float*>(g_controls[i].pValue);
+                    }
+                }
+                if (src >> g_overrideFractal) {
+                    src >> g_overridePalette;
+                    int pausedVal;
+                    src >> pausedVal;
+                    g_paused = (pausedVal == 1);
+                    src >> g_useAA;
+                }
+                src.close();
+                SaveConfig();
+                
+                AllocConsole();
+                FILE* fpOut;
+                freopen_s(&fpOut, "CONOUT$", "w", stdout);
+                std::cout << "Configuration imported successfully from [" << path << "] to AppData.\n";
+                std::cout << "Press ENTER to exit...\n";
+                std::fflush(stdout);
+                FILE* fpIn;
+                freopen_s(&fpIn, "CONIN$", "r", stdin);
+                std::cin.get();
+                if (fpIn) fclose(fpIn);
+                if (fpOut) fclose(fpOut);
+                FreeConsole();
+                return 0;
+            } else {
+                MessageBoxA(nullptr, ("Failed to open load source file: " + path).c_str(), "3D Fractal Screensaver Error", MB_OK | MB_ICONERROR);
+                return 1;
+            }
+        }
+    }
+
+    // Export configuration coordinates to custom location
+    if (HasOption(cmd, "save")) {
+        std::string path = GetOptionValue(originalCmd, "save");
+        if (!path.empty()) {
+            std::ofstream dst(path);
+            if (dst.is_open()) {
+                for (int i = 0; i < NUM_CONTROLS; ++i) {
+                    if (g_controls[i].type == CTRL_INT) {
+                        dst << *reinterpret_cast<int*>(g_controls[i].pValue) << "\n";
+                    } else {
+                        dst << *reinterpret_cast<float*>(g_controls[i].pValue) << "\n";
+                    }
+                }
+                dst << g_overrideFractal << "\n";
+                dst << g_overridePalette << "\n";
+                dst << (g_paused ? 1 : 0) << "\n";
+                dst << g_useAA << "\n";
+                dst.close();
+                
+                AllocConsole();
+                FILE* fpOut;
+                freopen_s(&fpOut, "CONOUT$", "w", stdout);
+                std::cout << "Configuration exported successfully to [" << path << "].\n";
+                std::cout << "Press ENTER to exit...\n";
+                std::fflush(stdout);
+                FILE* fpIn;
+                freopen_s(&fpIn, "CONIN$", "r", stdin);
+                std::cin.get();
+                if (fpIn) fclose(fpIn);
+                if (fpOut) fclose(fpOut);
+                FreeConsole();
+                return 0;
+            } else {
+                MessageBoxA(nullptr, ("Failed to create save destination file: " + path).c_str(), "3D Fractal Screensaver Error", MB_OK | MB_ICONERROR);
+                return 1;
+            }
+        }
+    }
+
+    // Command-line flag overrides
+    std::string val;
+    val = GetOptionValue(originalCmd, "f");
+    if (!val.empty()) g_overrideFractal = std::stoi(val);
+
+    val = GetOptionValue(originalCmd, "t");
+    if (!val.empty()) g_overridePalette = std::stoi(val);
+
+    val = GetOptionValue(originalCmd, "a");
+    if (!val.empty()) g_useAA = std::stoi(val);
+
+    val = GetOptionValue(originalCmd, "r");
+    if (!val.empty()) g_resolutionScale = std::stof(val);
+
+    val = GetOptionValue(originalCmd, "st");
+    if (!val.empty()) g_maxRaymarchSteps = std::stoi(val);
+
+    val = GetOptionValue(originalCmd, "sp");
+    if (!val.empty()) g_timeScale = std::stof(val);
 
     g_isPreview = (runMode == RunMode::Preview);
 
@@ -946,6 +1322,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         int activePaletteIndex = (g_overridePalette != -1) ? g_overridePalette : (activeCycle % MAX_PALETTES);
         Palette activePalette = GetPalette(activePaletteIndex);
 
+        static int lastPaletteIndex = -1;
+        if (activePaletteIndex != lastPaletteIndex) {
+            if (g_hwndPaletteCombobox && g_overridePalette == -1) {
+                SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, activePaletteIndex, 0);
+            }
+            lastPaletteIndex = activePaletteIndex;
+        }
+
         float cycleTime = std::fmod(timeAccumulator, TIME_FADE_TRANSITION);
         float fade = 1.0f;
         if (g_overridePalette == -1) {
@@ -983,6 +1367,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             static int lastFractal = -1;
             if (activeFractal != lastFractal) {
                 UpdateControlLayout(activeFractal, g_panelVisible);
+                if (g_hwndFractalCombobox && g_overrideFractal == -1) {
+                    SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, activeFractal, 0);
+                }
                 lastFractal = activeFractal;
             }
 
@@ -1111,17 +1498,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
             std::string infoStr = infoBuf;
 
-            // Draw unnoticeable legend using soft gray text at bottom left
-            glColor3f(TEXT_COLOR_RED, TEXT_COLOR_GREEN, TEXT_COLOR_BLUE);
-            
-            float startX = -0.98f;
-            float startY = -0.93f;
-            float lineStep = 0.038f;
+            if (!g_hideLegend) {
+                // Draw unnoticeable legend using soft gray text at bottom left
+                glColor3f(TEXT_COLOR_RED, TEXT_COLOR_GREEN, TEXT_COLOR_BLUE);
+                
+                float startX = -0.98f;
+                float startY = -0.93f;
+                float lineStep = 0.038f;
 
-            RenderText(startX, startY + 3.0f * lineStep, sceneStr, mw.fontListBase);
-            RenderText(startX, startY + 2.0f * lineStep, paletteStr, mw.fontListBase);
-            RenderText(startX, startY + 1.0f * lineStep, fpsStr, mw.fontListBase);
-            RenderText(startX, startY, infoStr, mw.fontListBase);
+                RenderText(startX, startY + 3.0f * lineStep, sceneStr, mw.fontListBase);
+                RenderText(startX, startY + 2.0f * lineStep, paletteStr, mw.fontListBase);
+                RenderText(startX, startY + 1.0f * lineStep, fpsStr, mw.fontListBase);
+                RenderText(startX, startY, infoStr, mw.fontListBase);
+            }
 
             SwapBuffers(mw.hdc);
         }

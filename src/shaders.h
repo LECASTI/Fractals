@@ -94,10 +94,10 @@ vec4 qSq(vec4 q) {
 float JuliaDE(vec3 p, out float orbit) {
     vec4 z = vec4(p, 0.0);
     float dr2 = 1.0;
-    float r2 = 0.0;
+    float r2 = dot(z, z);
     orbit = 0.0;
     for (int i = 0; i < u_iterJulia; i++) {
-        dr2 = 4.0 * r2 * dr2 + 1.0;
+        dr2 = 4.0 * r2 * dr2;
         z = qSq(z) + u_juliaC;
         r2 = dot(z, z);
         if (r2 > 4.0) break;

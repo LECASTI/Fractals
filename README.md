@@ -48,40 +48,47 @@ g++ -O3 -mwindows src/main.cpp -o target/fractals.scr -lopengl32 -lgdi32 -luser3
 ```
 *Note: The `-mwindows` flag compiles it as a GUI subsystem application, preventing a blank command window from launching behind the screensaver.*
 
-### Compile the Debug Utility
-Run this command from the repository root directory:
-```powershell
-g++ -O3 -mwindows src/main.cpp -o target/fractals_debug.exe -lopengl32 -lgdi32 -luser32 -lcomctl32
-```
-
 ---
 
 ## Command-Line Arguments (`fractals.scr`)
 
-The screensaver supports standard Windows screensaver arguments:
-* `target\fractals.scr /s` (or no arguments): Run the screensaver in **fullscreen mode** across all monitors.
+The screensaver supports standard Windows screensaver arguments and custom configuration parameter overrides:
+* `target\fractals.scr /s`: Run the screensaver in **fullscreen screensaver mode** across all monitors (does not write logs).
+* `target\fractals.scr` (or with `/c`): Show the interactive **configuration / settings control panel** window. This opens the GUI panel with real-time sliders and inputs (writes debug logs to `logs/runtime.log`).
 * `target\fractals.scr /p <HWND>`: Run the screensaver in **preview mode** inside the child window of the specified parent window handle.
-* `target\fractals.scr /c`: Show the **configuration / settings dialog** (displays information and help popup).
+
+### Custom Configuration Overrides (Case-Insensitive "/Letter" flags):
+You can override initial settings on startup when executing the screensaver:
+* `/f <index>`: Select starting fractal scene (`0`: Mandelbulb, `1`: Julia, `2`: Jerusalem Cube, `3`: Sierpinski, `4`: Menger).
+* `/t <index>`: Select starting gradient palette index (`0` - `49`).
+* `/a <0|1>`: Enable (`1`) or disable (`0`) adaptive antialiasing.
+* `/r <scale>`: Set initial resolution scale (`0.1` - `1.0`).
+* `/st <steps>`: Set maximum raymarch step limit (`10` - `150`).
+* `/sp <speed>`: Set camera animation speed scale (`0.0` - `5.0`).
+* `/l` or `/log`: Force writing diagnostic logs to `logs/runtime.log` (enabled by default in `/c` mode).
+* `/hl` or `/hide-legend`: Hide the visual on-screen stats legend overlay at the bottom-left of the display.
 
 ---
 
-## Installation on Windows
+## Installation & Explorer Context Menu
 
 To install and use this screensaver on your system:
 1. Copy `target/fractals.scr` and place it in your Windows System32 folder (usually `C:\Windows\System32`).
-2. Alternatively, right-click `fractals.scr` in File Explorer and select **Install**.
-3. Windows will open the **Screen Saver Settings** control panel with the fractal screensaver selected, showing a live preview in the preview box.
+2. Alternatively, right-click `fractals.scr` in File Explorer:
+   - Select **Install** to open the Windows Screen Saver Settings control panel with this screensaver selected.
+   - Select **Run** (renamed from "Test") to run the screensaver fullscreen.
+   - Select **Configurar** (Configure) to open the interactive configuration panel.
 
 ---
 
-## Debug Mode Hotkeys (`fractals_debug.exe`)
+## Configuration & Tuning Panel Hotkeys (`/c` mode)
 
-When running the debug executable, the screensaver runs as a borderless window and ignores mouse movements, mouse clicks, and random keys to allow inspection. It is only exit'able by pressing **Escape**.
-
-You can manipulate the simulation in real-time using these hotkeys:
+When running in configuration mode (`target\fractals.scr /c`), you can manipulate the simulation parameters interactively using standard control panel sliders/inputs, or with these hotkeys:
 * **`P`**: Pause / Resume the camera fly-through tracks.
 * **`F`** / **`B`**: Cycle the fractal type forward (`F`) or backward (`B`).
 * **`C`**: Cycle through the 50 gradient palettes.
 * **`A`**: Toggle adaptive lightweight antialiasing.
-* **`H`**: Toggle variables control panel visibility.
+* **`H`**: Toggle the variables control panel visibility.
 * **`Up Arrow`** / **`Down Arrow`**: Increase or decrease the camera speed (0.0x to 5.0x scale).
+* **`Escape`**: Exit configuration mode cleanly.
+

@@ -48,21 +48,23 @@ g++ -O3 -mwindows src/main.cpp -o target/fractals.scr -lopengl32 -lgdi32 -luser3
 
 ---
 
-## Command-Line Arguments
+## Command-Line Arguments (`fractals.scr`)
 
-The screensaver supports standard Windows screensaver arguments:
-* `target\fractals.scr /s` (or no arguments): Run the screensaver in **fullscreen mode** across all monitors.
+The screensaver supports standard Windows screensaver arguments and custom configuration overrides:
+* `target\fractals.scr /s`: Run the screensaver in **fullscreen screensaver mode** across all monitors (does not write logs).
+* `target\fractals.scr` (or with `/c`): Show the interactive **configuration / settings control panel** window. This opens the GUI panel with real-time sliders and inputs (writes debug logs to `logs/runtime.log`).
 * `target\fractals.scr /p <HWND>`: Run the screensaver in **preview mode** inside the child window of the specified parent window handle.
-* `target\fractals.scr /c`: Show the **configuration / settings dialog** (displays information and help popup).
 
 ---
 
-## Installation on Windows
+## Installation & Explorer Context Menu
 
 To install and use this screensaver on your system:
 1. Copy `target/fractals.scr` and place it in your Windows System32 folder (usually `C:\Windows\System32`).
-2. Alternatively, right-click `fractals.scr` in File Explorer and select **Install**.
-3. Windows will open the **Screen Saver Settings** control panel with the fractal screensaver selected, showing a live preview in the preview box.
+2. Alternatively, right-click `fractals.scr` in File Explorer:
+   - Select **Install** to open the Windows Screen Saver Settings control panel with this screensaver selected.
+   - Select **Run** (renamed from "Test") to run the screensaver fullscreen.
+   - Select **Configurar** (Configure) to open the interactive configuration panel.
 
 ---
 
