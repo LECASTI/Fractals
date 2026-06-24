@@ -1,0 +1,13 @@
+# Build and target directories (compiled binaries)
+Fractals/target/
+
+# Local logs and configurations
+Fractals/logs/
+*.log
+*.cfg
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
