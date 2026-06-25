@@ -125,21 +125,35 @@ float JerusalemCubeDE(vec3 p, out float orbit) {
     return d;
 }
 
-// 4. Sierpinski Pyramid DE
+// Helper for square pyramid SDF
+float sdPyramid(vec3 p) {
+    float d1 = abs(p.x) + p.y - 1.0;
+    float d2 = abs(p.z) + p.y - 1.0;
+    float d3 = -p.y;
+    return max(max(d1, d2), d3) / sqrt(2.0);
+}
+
+// 4. Sierpinski Pyramid DE (proper square pyramid)
 float SierpinskiPyramidDE(vec3 p, out float orbit) {
-    const vec3 v0 = vec3(1.0, 1.0, 1.0);
     float s = 1.0;
     orbit = 0.0;
+    
+    // Shift slightly in Y to center it for aesthetic rendering
+    p.y += 0.25;
+    
+    float o = 1.0 - 1.0 / u_sierpinskiScale;
     for (int i = 0; i < u_iterSierpinski; i++) {
-        if (p.x + p.y < 0.0) p.xy = -p.yx;
-        if (p.x + p.z < 0.0) p.xz = -p.zx;
-        if (p.y + p.z < 0.0) p.zy = -p.yz;
-        p = p * u_sierpinskiScale - v0 * (u_sierpinskiScale - 1.0);
+        p.xz = abs(p.xz);
+        if (p.x + p.z - p.y - o > 0.0) {
+            p.xz -= o;
+        } else {
+            p.y -= o;
+        }
+        p *= u_sierpinskiScale;
         s *= u_sierpinskiScale;
         orbit += dot(p, p);
     }
-    // distance to flat faces of regular tetrahedron instead of spheres
-    return (max(p.x + p.y + p.z, max(p.x - p.y - p.z, max(-p.x + p.y - p.z, -p.x - p.y + p.z))) - 1.0) / s;
+    return sdPyramid(p) / s;
 }
 
 // Helper box function for Menger Sponge

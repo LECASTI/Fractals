@@ -1,5 +1,20 @@
 # TODO
+- ~~Include current fractal and current color palette in the list of viewer settings show.~~
+  - ~~Because current scene and current color palette will be in saveable and viewer, saveable control's viewer's value and saves behaviour, but viewer's does not save and is run based.~~
+  - ~~Unless the user toggles cycling, in which case those two options move to the saveable section.~~
+- ~~Change Sierpinsky from weird rhombus to proper fractal square pyramid~~
+  - ~~Consider changing internal and display name too.~~
+- ~~Include Shift + C to cycle palette in opposite direction.~~
+- ~~Support custom cycle duration via a command-line flag (e.g., `/d <seconds>`).~~
+  - ~~Both cyclers (scene and palette) will be saveable settings. (integer seconds [1-60])~~
 - [ ] Add mouse based camera controls to config mode.
 - [ ] Add more fractals.
 - [ ] Add ambient occlusion to compatible fractals.
 - [ ] Consider adding an animation mode globally or per scene/fractal so certain variables like the dimensions shown in the julia set are cycled in a linear manner from a bottom to a top limit.
+  - Animation speed would be categorized as a saveable setting (floating point multiplier, default 1.0, min 0.1, max 10, step 0.1)
+- [ ] Separate Settings panel between 'saveable' settings and 'viewer' settings, where something like current fractal and color palette are always cycling (unless toggled off with a new hotkey or with a saveable setting)
+- [ ] Consider adding different camera modes (viewer settings internally but moved with hotkeys and mouse)
+  - Normal mode : rotates through the object / scene and has mouse controls.
+  - Freecam : controlled via WASD + Mouse movement and uses the mouse wheel to zoom in and out.
+    - Scale both's objects by Shift + Scroll wheel. 
+- [ ] Add smooth cross-fade transition when screensaver automatically cycles fractals. 

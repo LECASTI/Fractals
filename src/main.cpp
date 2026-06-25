@@ -45,6 +45,8 @@ int   g_iterMenger = DEFAULT_ITER_MENGER;
 float g_mengerScale = DEFAULT_SCALE_MENGER;
 float g_resolutionScale = TARGET_RESOLUTION_SCALE; // Dynamically adjusted via slider
 int   g_maxRaymarchSteps = MAX_RAYMARCH_STEPS;     // Dynamically adjusted via slider
+int   g_sceneCycleDuration = 30;
+int   g_paletteCycleDuration = 30;
 
 // ==========================================
 // CONSTANT PARAMETERS AND CONFIGURATION
@@ -59,7 +61,6 @@ const float TEXT_COLOR_RED = 0.45f;
 const float TEXT_COLOR_GREEN = 0.45f;
 const float TEXT_COLOR_BLUE = 0.47f;
 
-const float TIME_FADE_TRANSITION = 30.0f;
 const float TIME_FADE_HALF_WINDOW = 1.5f;
 const float MONITOR_TIME_OFFSET_SCALE = 37.5f;
 
@@ -69,7 +70,7 @@ const char* FRACTAL_NAMES[MAX_FRACTALS] = {
     "Mandelbulb",
     "Julia Quaternion",
     "Jerusalem Cube",
-    "Sierpinski Pyramid",
+    "Sierpinski Square Pyramid",
     "Menger Sponge"
 };
 
@@ -86,6 +87,11 @@ int g_overrideFractal = -1;
 int g_overridePalette = -1;
 int g_useAA = 1;
 bool g_hideLegend = false;
+// ponytail: global cycling states and tracking variables
+bool g_sceneCyclingEnabled = true;
+bool g_paletteCyclingEnabled = true;
+int g_currentActivePalette = 0;
+float g_timeAccumulator = 0.0f;
 
 enum ControlType {
     CTRL_INT,
@@ -113,6 +119,8 @@ ControlParam g_controls[] = {
     { "Res Scale", CTRL_FLOAT, &g_resolutionScale, 0.1f, 1.0f, 90, nullptr, nullptr },
     { "Raymarch Steps", CTRL_INT, &g_maxRaymarchSteps, 10.0f, 150.0f, 140, nullptr, nullptr },
     { "Speed Scale", CTRL_FLOAT, &g_timeScale, 0.0f, 5.0f, 100, nullptr, nullptr },
+    { "Scene Cycle (s)", CTRL_INT, &g_sceneCycleDuration, 1.0f, 60.0f, 59, nullptr, nullptr },
+    { "Palette Cycle (s)", CTRL_INT, &g_paletteCycleDuration, 1.0f, 60.0f, 59, nullptr, nullptr },
 
     // Mandelbulb
     { "Mandelbulb Iterations", CTRL_INT, &g_iterMandelbulb, 1.0f, 20.0f, 19, nullptr, nullptr },
@@ -180,6 +188,9 @@ void UpdateControlLabel(const ControlParam& cp) {
 #define IDC_COMBOBOX_FRACTAL   4005
 #define IDC_COMBOBOX_PALETTE   4006
 #define IDC_BUTTON_SAVE_CONFIG 4007
+// ponytail: new control IDs for cycling
+#define IDC_CHECKBOX_SCENE_CYCLING   4008
+#define IDC_CHECKBOX_PALETTE_CYCLING 4009
 
 HWND g_hwndResetSceneBtn = nullptr;
 HWND g_hwndResetAllBtn = nullptr;
@@ -190,6 +201,11 @@ HWND g_hwndFractalLabel = nullptr;
 HWND g_hwndFractalCombobox = nullptr;
 HWND g_hwndPaletteLabel = nullptr;
 HWND g_hwndPaletteCombobox = nullptr;
+// ponytail: new headers and controls HWNDs
+HWND g_hwndSaveableHeader = nullptr;
+HWND g_hwndViewerHeader = nullptr;
+HWND g_hwndSceneCyclingCheckbox = nullptr;
+HWND g_hwndPaletteCyclingCheckbox = nullptr;
 HWND g_hwndDebugWindow = nullptr;
 HFONT g_panelFont = nullptr;
 bool g_panelVisible = true;
@@ -221,10 +237,14 @@ void ResetAllVariables() {
     g_resolutionScale = TARGET_RESOLUTION_SCALE;
     g_maxRaymarchSteps = MAX_RAYMARCH_STEPS;
     g_timeScale = 1.0f;
+    g_sceneCycleDuration = 30;
+    g_paletteCycleDuration = 30;
     g_overrideFractal = -1;
     g_overridePalette = -1;
     g_paused = false;
     g_useAA = 1;
+    g_sceneCyclingEnabled = true;
+    g_paletteCyclingEnabled = true;
     for (int s = 0; s < 5; ++s) {
         ResetSceneVariables(s);
     }
@@ -267,6 +287,8 @@ void SaveConfig() {
         cfg << (g_paused ? 1 : 0) << "\n";
         cfg << g_useAA << "\n";
         cfg << (g_hideLegend ? 1 : 0) << "\n";
+        cfg << (g_sceneCyclingEnabled ? 1 : 0) << "\n";
+        cfg << (g_paletteCyclingEnabled ? 1 : 0) << "\n";
         cfg.close();
     }
 }
@@ -292,6 +314,13 @@ void LoadConfig() {
             if (cfg >> hideLegendVal) {
                 g_hideLegend = (hideLegendVal == 1);
             }
+            int valSceneCycle, valPaletteCycle;
+            if (cfg >> valSceneCycle) {
+                g_sceneCyclingEnabled = (valSceneCycle == 1);
+            }
+            if (cfg >> valPaletteCycle) {
+                g_paletteCyclingEnabled = (valPaletteCycle == 1);
+            }
         }
         cfg.close();
     }
@@ -310,69 +339,134 @@ void UpdateControlLayout(int activeFractal, bool panelVisible) {
     
     int cmdShow = panelVisible ? SW_SHOW : SW_HIDE;
 
-    // 1. Universal (first 3 controls: Res Scale, Raymarch Steps, Speed Scale)
-    for (int i = 0; i < 3; ++i) {
-        ShowWindow(g_controls[i].hwndLabel, cmdShow);
-        ShowWindow(g_controls[i].hwndSlider, cmdShow);
-        if (panelVisible) {
-            SetWindowPos(g_controls[i].hwndLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(g_controls[i].hwndSlider, nullptr, startX, y + 18, 420, 25, SWP_NOZORDER | SWP_NOACTIVATE);
-            y += 48;
-        }
-    }
-
-    // 2. Custom Settings (Scene dropdown, Palette dropdown, Pause checkbox, AA checkbox)
+    // Show/hide all headers and checkbox controls
+    if (g_hwndSaveableHeader) ShowWindow(g_hwndSaveableHeader, cmdShow);
+    if (g_hwndViewerHeader) ShowWindow(g_hwndViewerHeader, cmdShow);
+    if (g_hwndSceneCyclingCheckbox) ShowWindow(g_hwndSceneCyclingCheckbox, cmdShow);
+    if (g_hwndPaletteCyclingCheckbox) ShowWindow(g_hwndPaletteCyclingCheckbox, cmdShow);
+    if (g_hwndPauseCheckbox) ShowWindow(g_hwndPauseCheckbox, cmdShow);
+    if (g_hwndAACheckbox) ShowWindow(g_hwndAACheckbox, cmdShow);
     if (g_hwndFractalLabel) ShowWindow(g_hwndFractalLabel, cmdShow);
     if (g_hwndFractalCombobox) ShowWindow(g_hwndFractalCombobox, cmdShow);
     if (g_hwndPaletteLabel) ShowWindow(g_hwndPaletteLabel, cmdShow);
     if (g_hwndPaletteCombobox) ShowWindow(g_hwndPaletteCombobox, cmdShow);
-    if (g_hwndPauseCheckbox) ShowWindow(g_hwndPauseCheckbox, cmdShow);
-    if (g_hwndAACheckbox) ShowWindow(g_hwndAACheckbox, cmdShow);
 
-    if (panelVisible) {
-        if (g_hwndFractalLabel) SetWindowPos(g_hwndFractalLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
-        if (g_hwndFractalCombobox) SetWindowPos(g_hwndFractalCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
-        y += 54;
-
-        if (g_hwndPaletteLabel) SetWindowPos(g_hwndPaletteLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
-        if (g_hwndPaletteCombobox) SetWindowPos(g_hwndPaletteCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
-        y += 54;
-
-        if (g_hwndPauseCheckbox) SetWindowPos(g_hwndPauseCheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
-        y += 24;
-
-        if (g_hwndAACheckbox) SetWindowPos(g_hwndAACheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
-        y += 30;
+    // Show/hide first 5 universal controls
+    for (int i = 0; i < 5; ++i) {
+        ShowWindow(g_controls[i].hwndLabel, cmdShow);
+        ShowWindow(g_controls[i].hwndSlider, cmdShow);
     }
-    
-    // Scene specific controls
-    for (int i = 3; i < NUM_CONTROLS; ++i) {
+
+    // Show/hide scene specific controls
+    for (int i = 5; i < NUM_CONTROLS; ++i) {
         bool shouldShow = false;
         if (panelVisible) {
-            if (i >= 3 && i <= 4 && activeFractal == 0) shouldShow = true;
-            else if (i >= 5 && i <= 9 && activeFractal == 1) shouldShow = true;
-            else if (i >= 10 && i <= 11 && activeFractal == 2) shouldShow = true;
-            else if (i >= 12 && i <= 13 && activeFractal == 3) shouldShow = true;
-            else if (i >= 14 && i <= 15 && activeFractal == 4) shouldShow = true;
+            if (i >= 5 && i <= 6 && activeFractal == 0) shouldShow = true;
+            else if (i >= 7 && i <= 11 && activeFractal == 1) shouldShow = true;
+            else if (i >= 12 && i <= 13 && activeFractal == 2) shouldShow = true;
+            else if (i >= 14 && i <= 15 && activeFractal == 3) shouldShow = true;
+            else if (i >= 16 && i <= 17 && activeFractal == 4) shouldShow = true;
         }
-        
         int itemShow = shouldShow ? SW_SHOW : SW_HIDE;
         ShowWindow(g_controls[i].hwndLabel, itemShow);
         ShowWindow(g_controls[i].hwndSlider, itemShow);
-        
-        if (shouldShow) {
-            SetWindowPos(g_controls[i].hwndLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(g_controls[i].hwndSlider, nullptr, startX, y + 18, 420, 25, SWP_NOZORDER | SWP_NOACTIVATE);
-            y += 48;
-        }
     }
-    
-    // Action buttons
+
     if (g_hwndResetSceneBtn) ShowWindow(g_hwndResetSceneBtn, cmdShow);
     if (g_hwndResetAllBtn) ShowWindow(g_hwndResetAllBtn, cmdShow);
     if (g_hwndSaveConfigBtn) ShowWindow(g_hwndSaveConfigBtn, cmdShow);
 
     if (panelVisible) {
+        // --- SAVEABLE SETTINGS ---
+        if (g_hwndSaveableHeader) {
+            SetWindowPos(g_hwndSaveableHeader, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 24;
+        }
+
+        // 5 universal controls
+        for (int i = 0; i < 5; ++i) {
+            SetWindowPos(g_controls[i].hwndLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(g_controls[i].hwndSlider, nullptr, startX, y + 18, 420, 25, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 48;
+        }
+
+        // Checkboxes and toggles
+        if (g_hwndSceneCyclingCheckbox) {
+            SetWindowPos(g_hwndSceneCyclingCheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 24;
+        }
+        if (g_hwndPaletteCyclingCheckbox) {
+            SetWindowPos(g_hwndPaletteCyclingCheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 24;
+        }
+        if (g_hwndPauseCheckbox) {
+            SetWindowPos(g_hwndPauseCheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 24;
+        }
+        if (g_hwndAACheckbox) {
+            SetWindowPos(g_hwndAACheckbox, nullptr, startX, y, 420, 20, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 30;
+        }
+
+        // Move Fractal Combo if NOT cycling
+        if (!g_sceneCyclingEnabled) {
+            if (g_hwndFractalLabel && g_hwndFractalCombobox) {
+                SetWindowPos(g_hwndFractalLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(g_hwndFractalCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                y += 54;
+            }
+        }
+
+        // Move Palette Combo if NOT cycling
+        if (!g_paletteCyclingEnabled) {
+            if (g_hwndPaletteLabel && g_hwndPaletteCombobox) {
+                SetWindowPos(g_hwndPaletteLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(g_hwndPaletteCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                y += 54;
+            }
+        }
+
+        // Scene specific parameters under Saveable
+        for (int i = 5; i < NUM_CONTROLS; ++i) {
+            bool shouldShow = false;
+            if (i >= 5 && i <= 6 && activeFractal == 0) shouldShow = true;
+            else if (i >= 7 && i <= 11 && activeFractal == 1) shouldShow = true;
+            else if (i >= 12 && i <= 13 && activeFractal == 2) shouldShow = true;
+            else if (i >= 14 && i <= 15 && activeFractal == 3) shouldShow = true;
+            else if (i >= 16 && i <= 17 && activeFractal == 4) shouldShow = true;
+
+            if (shouldShow) {
+                SetWindowPos(g_controls[i].hwndLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(g_controls[i].hwndSlider, nullptr, startX, y + 18, 420, 25, SWP_NOZORDER | SWP_NOACTIVATE);
+                y += 48;
+            }
+        }
+
+        // --- VIEWER / RUN-TIME SETTINGS ---
+        if (g_hwndViewerHeader) {
+            SetWindowPos(g_hwndViewerHeader, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+            y += 24;
+        }
+
+        // Move Fractal Combo if cycling
+        if (g_sceneCyclingEnabled) {
+            if (g_hwndFractalLabel && g_hwndFractalCombobox) {
+                SetWindowPos(g_hwndFractalLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(g_hwndFractalCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                y += 54;
+            }
+        }
+
+        // Move Palette Combo if cycling
+        if (g_paletteCyclingEnabled) {
+            if (g_hwndPaletteLabel && g_hwndPaletteCombobox) {
+                SetWindowPos(g_hwndPaletteLabel, nullptr, startX, y, 420, 18, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(g_hwndPaletteCombobox, nullptr, startX, y + 18, 420, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+                y += 54;
+            }
+        }
+
+        // Action buttons at the bottom
         SetWindowPos(g_hwndResetSceneBtn, nullptr, startX, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
         SetWindowPos(g_hwndResetAllBtn, nullptr, startX + 145, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
         SetWindowPos(g_hwndSaveConfigBtn, nullptr, startX + 290, y + 10, 130, 30, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -510,16 +604,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 UpdateSlidersAndLabels();
                 if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
                 if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
-                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, (g_overrideFractal != -1) ? g_overrideFractal : g_currentActiveFractal, 0);
-                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, (g_overridePalette != -1) ? g_overridePalette : 0, 0);
+                if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, g_sceneCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndPaletteCyclingCheckbox) SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, g_paletteCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                // ponytail: offset index by 1 since index 0 is empty choice
+                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, (g_overrideFractal != -1) ? (g_overrideFractal + 1) : 0, 0);
+                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, (g_overridePalette != -1) ? (g_overridePalette + 1) : 0, 0);
                 SaveConfig();
             } else if (id == IDC_RESET_ALL) {
                 ResetAllVariables();
                 UpdateSlidersAndLabels();
                 if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
                 if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
-                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, -1, 0);
-                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, -1, 0);
+                if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, g_sceneCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                if (g_hwndPaletteCyclingCheckbox) SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, g_paletteCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                // ponytail: reset selects index 0 (empty choice/auto-cycle)
+                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, 0, 0);
+                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, 0, 0);
                 SaveConfig();
             } else if (id == IDC_BUTTON_SAVE_CONFIG) {
                 SaveConfig();
@@ -530,16 +630,85 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (id == IDC_CHECKBOX_AA && code == BN_CLICKED) {
                 LRESULT checked = SendMessageA(g_hwndAACheckbox, BM_GETCHECK, 0, 0);
                 g_useAA = (checked == BST_CHECKED) ? 1 : 0;
+            } else if (id == IDC_CHECKBOX_SCENE_CYCLING && code == BN_CLICKED) {
+                LRESULT checked = SendMessageA(g_hwndSceneCyclingCheckbox, BM_GETCHECK, 0, 0);
+                g_sceneCyclingEnabled = (checked == BST_CHECKED);
+                if (!g_sceneCyclingEnabled) {
+                    g_overrideFractal = g_currentActiveFractal;
+                } else {
+                    g_overrideFractal = -1;
+                }
+                if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, (g_overrideFractal != -1) ? (g_overrideFractal + 1) : 0, 0);
+                UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                SaveConfig();
+            } else if (id == IDC_CHECKBOX_PALETTE_CYCLING && code == BN_CLICKED) {
+                LRESULT checked = SendMessageA(g_hwndPaletteCyclingCheckbox, BM_GETCHECK, 0, 0);
+                g_paletteCyclingEnabled = (checked == BST_CHECKED);
+                if (!g_paletteCyclingEnabled) {
+                    g_overridePalette = g_currentActivePalette;
+                } else {
+                    g_overridePalette = -1;
+                }
+                if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, (g_overridePalette != -1) ? (g_overridePalette + 1) : 0, 0);
+                UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                SaveConfig();
             } else if (id == IDC_COMBOBOX_FRACTAL && code == CBN_SELCHANGE) {
                 int idx = SendMessageA(g_hwndFractalCombobox, CB_GETCURSEL, 0, 0);
-                if (idx >= 0 && idx < MAX_FRACTALS) {
-                    g_overrideFractal = idx;
-                    UpdateControlLayout(idx, g_panelVisible);
+                if (g_sceneCyclingEnabled) {
+                    // ponytail: viewer/run-time selection, does not save config
+                    if (idx > 0 && idx <= MAX_FRACTALS) {
+                        int targetFractal = idx - 1;
+                        float mTime = g_timeAccumulator;
+                        int activeCycle = static_cast<int>(mTime / static_cast<float>(g_sceneCycleDuration));
+                        int currentCycleBase = (activeCycle / MAX_FRACTALS) * MAX_FRACTALS;
+                        int newActiveCycle = currentCycleBase + targetFractal;
+                        if (newActiveCycle < activeCycle) {
+                            newActiveCycle += MAX_FRACTALS;
+                        }
+                        float cyclePhase = std::fmod(mTime, static_cast<float>(g_sceneCycleDuration));
+                        g_timeAccumulator = newActiveCycle * g_sceneCycleDuration + cyclePhase;
+                    }
+                } else {
+                    // ponytail: saveable setting selection, saves config
+                    if (idx == 0) {
+                        g_overrideFractal = -1;
+                        g_sceneCyclingEnabled = true;
+                        if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, BST_CHECKED, 0);
+                        UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                    } else if (idx > 0 && idx <= MAX_FRACTALS) {
+                        g_overrideFractal = idx - 1;
+                        UpdateControlLayout(idx - 1, g_panelVisible);
+                    }
+                    SaveConfig();
                 }
             } else if (id == IDC_COMBOBOX_PALETTE && code == CBN_SELCHANGE) {
                 int idx = SendMessageA(g_hwndPaletteCombobox, CB_GETCURSEL, 0, 0);
-                if (idx >= 0 && idx < MAX_PALETTES) {
-                    g_overridePalette = idx;
+                if (g_paletteCyclingEnabled) {
+                    // ponytail: viewer/run-time selection, does not save config
+                    if (idx > 0 && idx <= MAX_PALETTES) {
+                        int targetPalette = idx - 1;
+                        float mTime = g_timeAccumulator;
+                        float paletteCycleDur = static_cast<float>(g_paletteCycleDuration);
+                        int activeCycle = static_cast<int>(mTime / paletteCycleDur);
+                        int currentCycleBase = (activeCycle / MAX_PALETTES) * MAX_PALETTES;
+                        int newActiveCycle = currentCycleBase + targetPalette;
+                        if (newActiveCycle < activeCycle) {
+                            newActiveCycle += MAX_PALETTES;
+                        }
+                        float cyclePhase = std::fmod(mTime, paletteCycleDur);
+                        g_timeAccumulator = newActiveCycle * paletteCycleDur + cyclePhase;
+                    }
+                } else {
+                    // ponytail: saveable setting selection, saves config
+                    if (idx == 0) {
+                        g_overridePalette = -1;
+                        g_paletteCyclingEnabled = true;
+                        if (g_hwndPaletteCyclingCheckbox) SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, BST_CHECKED, 0);
+                        UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                    } else if (idx > 0 && idx <= MAX_PALETTES) {
+                        g_overridePalette = idx - 1;
+                    }
+                    SaveConfig();
                 }
             }
             return 0;
@@ -593,19 +762,62 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g_paused = !g_paused;
                     if (g_hwndPauseCheckbox) SendMessageA(g_hwndPauseCheckbox, BM_SETCHECK, g_paused ? BST_CHECKED : BST_UNCHECKED, 0);
                 } else if (wParam == 'F') {
+                    g_sceneCyclingEnabled = false;
+                    if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, BST_UNCHECKED, 0);
                     if (g_overrideFractal == -1) g_overrideFractal = 0;
                     else g_overrideFractal = (g_overrideFractal + 1) % MAX_FRACTALS;
-                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal, 0);
+                    // ponytail: offset index by 1
+                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal + 1, 0);
                     UpdateControlLayout(g_overrideFractal, g_panelVisible);
+                    SaveConfig();
                 } else if (wParam == 'B') {
+                    g_sceneCyclingEnabled = false;
+                    if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, BST_UNCHECKED, 0);
                     if (g_overrideFractal == -1) g_overrideFractal = 0;
                     else g_overrideFractal = (g_overrideFractal + MAX_FRACTALS - 1) % MAX_FRACTALS;
-                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal, 0);
+                    // ponytail: offset index by 1
+                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, g_overrideFractal + 1, 0);
                     UpdateControlLayout(g_overrideFractal, g_panelVisible);
+                    SaveConfig();
                 } else if (wParam == 'C') {
-                    if (g_overridePalette == -1) g_overridePalette = 0;
-                    else g_overridePalette = (g_overridePalette + 1) % MAX_PALETTES;
-                    if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, g_overridePalette, 0);
+                    g_paletteCyclingEnabled = false;
+                    if (g_hwndPaletteCyclingCheckbox) SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, BST_UNCHECKED, 0);
+                    bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                    if (g_overridePalette == -1) {
+                        g_overridePalette = isShiftPressed ? (MAX_PALETTES - 1) : 0;
+                    } else {
+                        if (isShiftPressed) {
+                            g_overridePalette = (g_overridePalette + MAX_PALETTES - 1) % MAX_PALETTES;
+                        } else {
+                            g_overridePalette = (g_overridePalette + 1) % MAX_PALETTES;
+                        }
+                    }
+                    // ponytail: offset index by 1
+                    if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, g_overridePalette + 1, 0);
+                    UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                    SaveConfig();
+                } else if (wParam == 'S') {
+                    g_sceneCyclingEnabled = !g_sceneCyclingEnabled;
+                    if (g_hwndSceneCyclingCheckbox) SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, g_sceneCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                    if (!g_sceneCyclingEnabled) {
+                        g_overrideFractal = g_currentActiveFractal;
+                    } else {
+                        g_overrideFractal = -1;
+                    }
+                    if (g_hwndFractalCombobox) SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, (g_overrideFractal != -1) ? (g_overrideFractal + 1) : 0, 0);
+                    UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                    SaveConfig();
+                } else if (wParam == 'Y') {
+                    g_paletteCyclingEnabled = !g_paletteCyclingEnabled;
+                    if (g_hwndPaletteCyclingCheckbox) SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, g_paletteCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+                    if (!g_paletteCyclingEnabled) {
+                        g_overridePalette = g_currentActivePalette;
+                    } else {
+                        g_overridePalette = -1;
+                    }
+                    if (g_hwndPaletteCombobox) SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, (g_overridePalette != -1) ? (g_overridePalette + 1) : 0, 0);
+                    UpdateControlLayout(g_currentActiveFractal, g_panelVisible);
+                    SaveConfig();
                 } else if (wParam == 'A') {
                     g_useAA = g_useAA == 1 ? 0 : 1;
                     if (g_hwndAACheckbox) SendMessageA(g_hwndAACheckbox, BM_SETCHECK, g_useAA ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -788,6 +1000,36 @@ bool InitMonitorWindow(MonitorWindow& mw, HINSTANCE hInstance, RECT rect, HWND p
         }
 
         // --- NEW CONTROLS ---
+        g_hwndSaveableHeader = CreateWindowExA(
+            0, "STATIC", "=== Saveable Settings ===",
+            WS_CHILD | WS_VISIBLE,
+            1475, 10, 420, 18,
+            mw.hwnd, nullptr, hInstance, nullptr
+        );
+        g_hwndViewerHeader = CreateWindowExA(
+            0, "STATIC", "=== Viewer / Run-Time Settings ===",
+            WS_CHILD | WS_VISIBLE,
+            1475, 10, 420, 18,
+            mw.hwnd, nullptr, hInstance, nullptr
+        );
+        g_hwndSceneCyclingCheckbox = CreateWindowExA(
+            0, "BUTTON", "Auto-Cycle Scenes",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            1475, 10, 420, 20,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_CHECKBOX_SCENE_CYCLING),
+            hInstance, nullptr
+        );
+        SendMessageA(g_hwndSceneCyclingCheckbox, BM_SETCHECK, g_sceneCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        g_hwndPaletteCyclingCheckbox = CreateWindowExA(
+            0, "BUTTON", "Auto-Cycle Palettes",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            1475, 10, 420, 20,
+            mw.hwnd, reinterpret_cast<HMENU>(IDC_CHECKBOX_PALETTE_CYCLING),
+            hInstance, nullptr
+        );
+        SendMessageA(g_hwndPaletteCyclingCheckbox, BM_SETCHECK, g_paletteCyclingEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
         g_hwndFractalLabel = CreateWindowExA(
             0, "STATIC", "Fractal Scene Selection:",
             WS_CHILD | WS_VISIBLE,
@@ -801,10 +1043,12 @@ bool InitMonitorWindow(MonitorWindow& mw, HINSTANCE hInstance, RECT rect, HWND p
             mw.hwnd, reinterpret_cast<HMENU>(IDC_COMBOBOX_FRACTAL),
             hInstance, nullptr
         );
+        // ponytail: first entry is empty choice representing cycle/auto
+        SendMessageA(g_hwndFractalCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(""));
         for (int i = 0; i < MAX_FRACTALS; ++i) {
             SendMessageA(g_hwndFractalCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FRACTAL_NAMES[i]));
         }
-        int curFrac = (g_overrideFractal != -1) ? g_overrideFractal : 0;
+        int curFrac = (g_overrideFractal != -1) ? (g_overrideFractal + 1) : 0;
         SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, curFrac, 0);
 
         g_hwndPaletteLabel = CreateWindowExA(
@@ -820,13 +1064,15 @@ bool InitMonitorWindow(MonitorWindow& mw, HINSTANCE hInstance, RECT rect, HWND p
             mw.hwnd, reinterpret_cast<HMENU>(IDC_COMBOBOX_PALETTE),
             hInstance, nullptr
         );
+        // ponytail: first entry is empty choice representing cycle/auto
+        SendMessageA(g_hwndPaletteCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(""));
         for (int i = 0; i < MAX_PALETTES; ++i) {
             Palette p = GetPalette(i);
             char buf[128];
             std::sprintf(buf, "%d: %s", i, p.name);
             SendMessageA(g_hwndPaletteCombobox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(buf));
         }
-        int curPal = (g_overridePalette != -1) ? g_overridePalette : 0;
+        int curPal = (g_overridePalette != -1) ? (g_overridePalette + 1) : 0;
         SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, curPal, 0);
 
         g_hwndPauseCheckbox = CreateWindowExA(
@@ -870,6 +1116,10 @@ bool InitMonitorWindow(MonitorWindow& mw, HINSTANCE hInstance, RECT rect, HWND p
             hInstance, nullptr
         );
 
+        SendMessageA(g_hwndSaveableHeader, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndViewerHeader, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndSceneCyclingCheckbox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
+        SendMessageA(g_hwndPaletteCyclingCheckbox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
         SendMessageA(g_hwndFractalLabel, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
         SendMessageA(g_hwndFractalCombobox, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
         SendMessageA(g_hwndPaletteLabel, WM_SETFONT, reinterpret_cast<WPARAM>(g_panelFont), TRUE);
@@ -1018,7 +1268,8 @@ void ShowConsoleHelp() {
     std::cout << "  /a, -a, --a <0|1>        Override adaptive antialiasing (0=off, 1=on)\n";
     std::cout << "  /r, -r, --r <0.1-1.0>    Override resolution scaling factor\n";
     std::cout << "  /st, -st, --st <10-150>  Override maximum raymarching step count\n";
-    std::cout << "  /sp, -sp, --sp <0.0-5.0> Override camera speed scale\n\n";
+    std::cout << "  /sp, -sp, --sp <0.0-5.0> Override camera speed scale\n";
+    std::cout << "  /d, -d, --d <1-60>       Override cycle duration in seconds for scene & palette\n\n";
     std::cout << "Press ENTER to exit help...\n";
     
     std::fflush(stdout);
@@ -1108,6 +1359,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     src >> pausedVal;
                     g_paused = (pausedVal == 1);
                     src >> g_useAA;
+                    int sceneCycVal, palCycVal;
+                    if (src >> sceneCycVal) {
+                        g_sceneCyclingEnabled = (sceneCycVal == 1);
+                    }
+                    if (src >> palCycVal) {
+                        g_paletteCyclingEnabled = (palCycVal == 1);
+                    }
                 }
                 src.close();
                 SaveConfig();
@@ -1149,6 +1407,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 dst << g_overridePalette << "\n";
                 dst << (g_paused ? 1 : 0) << "\n";
                 dst << g_useAA << "\n";
+                dst << (g_sceneCyclingEnabled ? 1 : 0) << "\n";
+                dst << (g_paletteCyclingEnabled ? 1 : 0) << "\n";
                 dst.close();
                 
                 AllocConsole();
@@ -1190,6 +1450,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     val = GetOptionValue(originalCmd, "sp");
     if (!val.empty()) g_timeScale = std::stof(val);
+
+    val = GetOptionValue(originalCmd, "d");
+    if (!val.empty()) {
+        int dVal = std::stoi(val);
+        if (dVal >= 1 && dVal <= 60) {
+            g_sceneCycleDuration = dVal;
+            g_paletteCycleDuration = dVal;
+        }
+    }
 
     g_isPreview = (runMode == RunMode::Preview);
 
@@ -1276,7 +1545,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Setup time tracking
     DWORD startTick = GetTickCount();
     DWORD lastTick = startTick;
-    float timeAccumulator = static_cast<float>(std::rand() % 1000); // Random initial shared time offset
+    g_timeAccumulator = static_cast<float>(std::rand() % 1000); // Random initial shared time offset
 
     // FPS calculation filter
     float smoothedFps = 60.0f;
@@ -1290,7 +1559,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
             if (g_isDebug && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
                 WPARAM wp = msg.wParam;
-                if (wp == VK_ESCAPE || wp == 'P' || wp == 'F' || wp == 'B' || wp == 'C' || wp == 'A' || wp == 'H' || wp == VK_UP || wp == VK_DOWN) {
+                if (wp == VK_ESCAPE || wp == 'P' || wp == 'F' || wp == 'B' || wp == 'C' || wp == 'A' || wp == 'H' || wp == VK_UP || wp == VK_DOWN || wp == 'S' || wp == 'Y') {
                     SendMessageA(g_hwndDebugWindow, msg.message, wp, msg.lParam);
                     continue;
                 }
@@ -1314,29 +1583,36 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         // Apply paused and speed scaling configurations
         if (!g_paused) {
-            timeAccumulator += dt * g_timeScale;
+            g_timeAccumulator += dt * g_timeScale;
         }
 
         // Shared global color palette indexes and transition fade
-        int activeCycle = static_cast<int>(timeAccumulator / TIME_FADE_TRANSITION);
-        int activePaletteIndex = (g_overridePalette != -1) ? g_overridePalette : (activeCycle % MAX_PALETTES);
+        float paletteCycleDur = static_cast<float>(g_paletteCycleDuration);
+        int activeCycle = static_cast<int>(g_timeAccumulator / paletteCycleDur);
+        int activePaletteIndex = (g_paletteCyclingEnabled && g_overridePalette == -1) ? (activeCycle % MAX_PALETTES) : (g_overridePalette != -1 ? g_overridePalette : 0);
+        g_currentActivePalette = activePaletteIndex;
         Palette activePalette = GetPalette(activePaletteIndex);
 
         static int lastPaletteIndex = -1;
         if (activePaletteIndex != lastPaletteIndex) {
-            if (g_hwndPaletteCombobox && g_overridePalette == -1) {
-                SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, activePaletteIndex, 0);
+            if (g_hwndPaletteCombobox && g_paletteCyclingEnabled && g_overridePalette == -1) {
+                // ponytail: select index 0 (empty choice) when cycling
+                SendMessageA(g_hwndPaletteCombobox, CB_SETCURSEL, 0, 0);
             }
             lastPaletteIndex = activePaletteIndex;
         }
 
-        float cycleTime = std::fmod(timeAccumulator, TIME_FADE_TRANSITION);
+        float cycleTime = std::fmod(g_timeAccumulator, paletteCycleDur);
         float fade = 1.0f;
         if (g_overridePalette == -1) {
-            if (cycleTime < TIME_FADE_HALF_WINDOW) {
-                fade = cycleTime / TIME_FADE_HALF_WINDOW;
-            } else if (cycleTime > (TIME_FADE_TRANSITION - TIME_FADE_HALF_WINDOW)) {
-                fade = (TIME_FADE_TRANSITION - cycleTime) / TIME_FADE_HALF_WINDOW;
+            float fadeWindow = TIME_FADE_HALF_WINDOW;
+            if (paletteCycleDur < 3.0f) {
+                fadeWindow = paletteCycleDur * 0.5f;
+            }
+            if (cycleTime < fadeWindow) {
+                fade = cycleTime / fadeWindow;
+            } else if (cycleTime > (paletteCycleDur - fadeWindow)) {
+                fade = (paletteCycleDur - cycleTime) / fadeWindow;
             }
         }
 
@@ -1358,17 +1634,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             // Compute independent scene time/offset per monitor
-            float mTime = timeAccumulator + mw.timeOffset;
-            int mActiveCycle = static_cast<int>(mTime / TIME_FADE_TRANSITION);
+            float mTime = g_timeAccumulator + mw.timeOffset;
+            int mActiveCycle = static_cast<int>(mTime / static_cast<float>(g_sceneCycleDuration));
             
             // Choose active fractal based on override or time offset
-            int activeFractal = (g_overrideFractal != -1) ? g_overrideFractal : (mActiveCycle % MAX_FRACTALS);
+            int activeFractal = (g_sceneCyclingEnabled && g_overrideFractal == -1) ? (mActiveCycle % MAX_FRACTALS) : (g_overrideFractal != -1 ? g_overrideFractal : 0);
             g_currentActiveFractal = activeFractal;
             static int lastFractal = -1;
             if (activeFractal != lastFractal) {
                 UpdateControlLayout(activeFractal, g_panelVisible);
-                if (g_hwndFractalCombobox && g_overrideFractal == -1) {
-                    SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, activeFractal, 0);
+                if (g_hwndFractalCombobox && g_sceneCyclingEnabled && g_overrideFractal == -1) {
+                    // ponytail: select index 0 (empty choice) when cycling
+                    SendMessageA(g_hwndFractalCombobox, CB_SETCURSEL, 0, 0);
                 }
                 lastFractal = activeFractal;
             }
@@ -1482,8 +1759,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             // Format on-screen legend variables
-            std::string sceneStr = "Scene: " + std::string(FRACTAL_NAMES[activeFractal]) + (g_overrideFractal != -1 ? " [Manual]" : "");
-            std::string paletteStr = "Palette: " + std::string(activePalette.name) + " #" + std::to_string(activePaletteIndex) + (g_overridePalette != -1 ? " [Manual]" : "");
+            std::string sceneStr = "Scene: " + std::string(FRACTAL_NAMES[activeFractal]) + (!g_sceneCyclingEnabled ? " [Manual]" : " [Cycling]");
+            std::string paletteStr = "Palette: " + std::string(activePalette.name) + " #" + std::to_string(activePaletteIndex) + (!g_paletteCyclingEnabled ? " [Manual]" : " [Cycling]");
             
             char fpsBuf[32];
             std::sprintf(fpsBuf, "FPS: %.1f", smoothedFps);
@@ -1491,7 +1768,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             char infoBuf[256];
             if (g_isDebug) {
-                std::sprintf(infoBuf, "Res: %dx%d (Scale: %.2f) | Steps: %d | AA: %s | Speed: %.1fx | Controls: [P] Pause | [F/B] Scene | [C] Palette | [A] AA | [Up/Dn] Speed | [H] Panel | [Esc] Exit", 
+                std::sprintf(infoBuf, "Res: %dx%d (Scale: %.2f) | Steps: %d | AA: %s | Speed: %.1fx | Controls: [P] Pause | [F/B] Scene | [C] Palette | [S] Scene Cycle | [Y] Pal Cycle | [A] AA | [Up/Dn] Speed | [H] Panel | [Esc] Exit", 
                              w, h, g_resolutionScale, g_maxRaymarchSteps, g_useAA ? "On" : "Off", g_timeScale);
             } else {
                 std::sprintf(infoBuf, "Res: %dx%d (Scale: %.2f) | Steps: %d", w, h, g_resolutionScale, g_maxRaymarchSteps);
